@@ -35,8 +35,6 @@ import os
 import ovirtsdk4 as sdk
 import ovirtsdk4.types as types
 import ssl
-import subprocess
-import sys
 import time
 
 from httplib import HTTPSConnection
@@ -206,38 +204,51 @@ proxy_connection.endheaders()
 # Note that we must send the number of bytes we promised in the
 # Content-Range header.
 
-start = last_progress = time.time()
+# Set needed headers for downloading:
+transfer_headers = {
+    'Authorization': transfer.signed_ticket,
+    'Content-Type': "application/json",
+}
 
-with open(image_path, "rb") as disk:
-    pos = 0
-    while pos < image_size:
-        # Send the next chunk to the proxy.
-        to_read = min(image_size - pos, BUF_SIZE)
-        chunk = disk.read(to_read)
-        if not chunk:
-            transfer_service.pause()
-            raise RuntimeError("Unexpected end of file at pos=%d" % pos)
+source = "/root/nfsshare/dae8fec4-0a2e-47b3-b8fd-74fd437fd894.disk"
+# Perform the request.
+proxy_connection.request(
+    'POST',
+    proxy_url.path,
+    headers=transfer_headers,
+    body=json.dumps({'method': 'restore',
+                     'backup_path': '%s' % source,
+                    }),
+)
 
-        proxy_connection.send(chunk)
-        pos += len(chunk)
-        now = time.time()
+# Get response
+r = proxy_connection.getresponse()
 
-        # Report progress every 10 seconds.
-        if now - last_progress > 10:
-            print("Uploaded %.2f%%" % (float(pos) / image_size * 100))
-            last_progress = now
+# Check the response status:
+if r.status >= 300:
+    print "Error: %s" % r.read()
 
-# Get the response
-response = proxy_connection.getresponse()
-if response.status != 200:
-    transfer_service.pause()
-    print("Upload failed: %s %s" % (response.status, response.reason))
-    sys.exit(1)
+if r.status == 206:
+    location = r.msg.getheader('location')
+    location = location.replace('54324', '54325')
+    location = location.split("54325")[1]
 
-elapsed = time.time() - start
+    while (True):
+        # Poll for the task status
+        proxy_connection.request(
+                        'GET',
+                        location,
+                        headers=transfer_headers,
+                        body="",
+                    )
+        r = proxy_connection.getresponse()
+        status = json.loads(r.fp.read())
+        print status
+        if status['status'] != 'PENDING':
+            break
+        time.sleep(5)
 
-print("Uploaded %.2fg in %.2f seconds (%.2fm/s)" % (
-      image_size / float(1024**3), elapsed, image_size / 1024**2 / elapsed))
+    print "Upload completed. Status %s" % status
 
 print("Finalizing transfer session...")
 # Successful cleanup

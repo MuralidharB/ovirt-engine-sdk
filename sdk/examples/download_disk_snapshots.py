@@ -17,6 +17,7 @@
 # limitations under the License.
 #
 
+import json
 import logging
 import ovirtsdk4 as sdk
 import ovirtsdk4.types as types
@@ -44,7 +45,7 @@ logging.basicConfig(level=logging.DEBUG, filename='example.log')
 def get_connection():
     # Create the connection to the server:
     return sdk.Connection(
-        url='https://engine40.example.com/ovirt-engine/api',
+        url='https://ns547432.ip-66-70-177.net/ovirt-engine/api',
         username='admin@internal',
         password='redhat123',
         ca_file='ca.pem',
@@ -100,17 +101,23 @@ def download_disk_snapshot(disk_snapshot):
         proxy_connection = get_proxy_connection(proxy_url)
         path = disk_snapshot.id
 
-        with open(path, "wb") as mydisk:
+        #with open(path, "wb") as mydisk:
+        if True:
             # Set needed headers for downloading:
             transfer_headers = {
                 'Authorization': transfer.signed_ticket,
+                'Content-Type': "application/json",
             }
 
+            dest = "/root/nfsshare/%s.disk" % disk_snapshot.id
             # Perform the request.
             proxy_connection.request(
-                'GET',
+                'POST',
                 proxy_url.path,
                 headers=transfer_headers,
+                body=json.dumps({'method': 'backup',
+                                 'backup_path': '%s' % dest,
+                                }),
             )
             # Get response
             r = proxy_connection.getresponse()
@@ -119,30 +126,28 @@ def download_disk_snapshot(disk_snapshot):
             if r.status >= 300:
                 print "Error: %s" % r.read()
 
-            bytes_to_read = int(r.getheader('Content-Length'))
-            chunk_size = 64 * 1024 * 1024
+            if r.status == 206:
+                location = r.msg.getheader('location')
+                location = location.replace('54324', '54325')
+                location = location.split("54325")[1]
 
-            print "Disk snapshot size: %s bytes" % str(bytes_to_read)
+                while (True):
+                    # Poll for the task status
+                    proxy_connection.request(
+                        'GET',
+                        location,
+                        headers=transfer_headers,
+                        body="",
+                    )
+                    r = proxy_connection.getresponse()
+                    status = json.loads(r.fp.read())
+                    print status
+                    if status['status'] != 'PENDING':
+                        break
+                    time.sleep(5)
 
-            while bytes_to_read > 0:
-                # Calculate next chunk to read
-                to_read = min(bytes_to_read, chunk_size)
+                print "Download completed. Status %s" % status
 
-                # Read next chunk
-                chunk = r.read(to_read)
-
-                if chunk == "":
-                    raise RuntimeError("Socket disconnected")
-
-                # Write the content to file:
-                mydisk.write(chunk)
-
-                # Update bytes_to_read
-                bytes_to_read -= len(chunk)
-
-                completed = 1 - (bytes_to_read / float(r.getheader('Content-Length')))
-
-                print "Completed", "{:.0%}".format(completed)
     finally:
         # Finalize the session.
         if transfer_service is not None:
@@ -151,8 +156,8 @@ def download_disk_snapshot(disk_snapshot):
 if __name__ == "__main__":
 
     # Set relevant disk and stroage domain IDs
-    disk_id = 'ccdd6487-0a8f-40c8-9f45-40e0e2b30d79'
-    sd_name = 'data1'
+    disk_id = '8b15d5cd-5bbc-4d11-8f32-920e27cf6c7a'
+    sd_name = 'ns547432-Local'
 
     # Create a connection to the server:
     connection = get_connection()
@@ -182,7 +187,11 @@ if __name__ == "__main__":
 
     # Download disk snapshots
     for disk_snapshot in disk_snapshots:
-        download_disk_snapshot(disk_snapshot)
+        try:
+            download_disk_snapshot(disk_snapshot)
+        except Exception as ex:
+            print ex
+            pass
 
     # Close the connection to the server:
     connection.close()
